@@ -1,10 +1,10 @@
 ### LLFF Specific Arguments
 
 run.dataset_name = "llff"
-run.datadir = "data/llff"
+run.datadir = "/data2/lxq/datasets/nerf_llff_data"
 
 LitData.batch_sampler = "all_images"
-LitData.ndc_coord = True
+# LitData.ndc_coord = True
 
 ### NeRF Standard Specific Arguments
 
@@ -16,6 +16,7 @@ LitData.batch_size = 4096
 LitData.chunk = 16384
 LitData.use_pixel_centers = True
 LitData.epoch_size = 250000
+
 
 run.max_steps = 1000000
 run.log_every_n_steps = 100

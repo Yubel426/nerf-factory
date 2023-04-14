@@ -1,7 +1,7 @@
 ### LF Specific Arguments
 
 run.dataset_name = "lf"
-run.datadir = "data/lf_data"
+run.datadir = "data2/lxq/datasets/nerf_llff_data"
 
 LitData.batch_sampler = "all_images"
 LitDataLF.cam_scale_factor = 0.125

@@ -26,7 +26,7 @@ class LitDataLLFF(LitData):
         datadir: str,
         scene_name: str,
         # LLFF specific arguments
-        factor: int = 4,
+        factor: int = 1,
         llffhold: int = 8,
         spherify: bool = False,
         path_zflat: bool = False,
