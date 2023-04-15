@@ -25,7 +25,36 @@ from src.model.interface import LitModel
 
 
 @gin.configurable()
-class NeRFMLP(nn.Module):
+class ViewMLP(torch.nn.Module):
+    def __init__(self):
+        super(ViewMLP, self).__init__()
+        layers = []
+        dim_in = [4, 256, 256, 256, 128, 256, 256, 256, 256]
+        dim_out = [256, 256, 252, 128, 256, 256, 128, 256, 4]
+        self.skip = [2, 6]
+        for i in range(9):
+            linear = torch.nn.Linear(dim_in[i], dim_out[i])
+            init.xavier_uniform_(linear.weight)
+            layers.append(torch.nn.Sequential(linear, torch.nn.ReLU(True)))
+        self.layers = torch.nn.ModuleList(layers)
+        del layers
+
+    def forward(self, x):
+        inputs = x
+        for i, layer in enumerate(self.layers):
+            x = layer(x)
+            if i == 2:
+                x = torch.cat([x, inputs], dim=-1)
+            if i == 3:
+                inputs = x
+            if i == 6:
+                x = torch.cat([x, inputs], dim=-1)
+        x = helper.normalize(x)
+        return x
+
+
+@gin.configurable()
+class SNeRFMLP(nn.Module):
     def __init__(
         self,
         min_deg_point,
@@ -45,7 +74,7 @@ class NeRFMLP(nn.Module):
             if name not in ["self", "__class__"]:
                 setattr(self, name, value)
 
-        super(NeRFMLP, self).__init__()
+        super(SNeRFMLP, self).__init__()
 
         self.net_activation = nn.ReLU()
         pos_size = ((max_deg_point - min_deg_point) * 2 + 1) * input_ch
@@ -111,7 +140,7 @@ class NeRFMLP(nn.Module):
 
 
 @gin.configurable()
-class NeRF(nn.Module):
+class SNeRF(nn.Module):
     def __init__(
         self,
         num_levels: int = 2,
@@ -128,64 +157,108 @@ class NeRF(nn.Module):
             if name not in ["self", "__class__"]:
                 setattr(self, name, value)
 
-        super(NeRF, self).__init__()
+        super(SNeRF, self).__init__()
 
         self.rgb_activation = nn.Sigmoid()
         self.sigma_activation = nn.ReLU()
-        self.coarse_mlp = NeRFMLP(min_deg_point, max_deg_point, deg_view)
-        self.fine_mlp = NeRFMLP(min_deg_point, max_deg_point, deg_view)
+        self.coarse_mlp = SNeRFMLP(min_deg_point, max_deg_point, deg_view)
+        self.fine_mlp = SNeRFMLP(min_deg_point, max_deg_point, deg_view)
+        self.viewmlp = ViewMLP()
 
     def forward(self, rays, randomized, white_bkgd, near, far):
 
         ret = []
         for i_level in range(self.num_levels):
             if i_level == 0:
-                t_vals, samples = helper.sample_along_rays(
+                mid = 0.5
+                # mid_t_val = 1.0 / (1.0 / near * (1.0 - mid) + 1.0 / far * mid)
+                mid_t_val = mid * (near + far)
+                rays_o_pred = rays["rays_o"][..., None, :] + mid_t_val * rays["rays_d"][..., None, :]
+                uvst = helper.get_rays_uvst(rays["rays_o"], rays["rays_d"],0,1)
+                # uvst_pred = self.view_mlp(uvst)
+                uvst_pred = uvst
+                rays_d_pred = helper.get_rays_d(uvst_pred)
+                t_vals1, samples1 = helper.sample_along_rays(
                     rays_o=rays["rays_o"],
                     rays_d=rays["rays_d"],
-                    num_samples=self.num_coarse_samples,
+                    num_samples=int(self.num_coarse_samples/4),
                     near=near,
-                    far=far,
+                    far=far/1.5,
+                    randomized=randomized,
+                    lindisp=self.lindisp,
+                )
+                t_vals2, samples2 = helper.sample_along_rays(
+                    rays_o=rays_o_pred,
+                    rays_d=rays_d_pred,
+                    num_samples=int(self.num_coarse_samples/4*3),
+                    near=near,
+                    far=far/1.5,
                     randomized=randomized,
                     lindisp=self.lindisp,
                 )
                 mlp = self.coarse_mlp
 
             else:
-                t_mids = 0.5 * (t_vals[..., 1:] + t_vals[..., :-1])
-                t_vals, samples = helper.sample_pdf(
-                    bins=t_mids,
-                    weights=weights[..., 1:-1],
+                t_mids1 = 0.5 * (t_vals1[..., 1:] + t_vals1[..., :-1])
+                t_vals1, samples1 = helper.sample_pdf(
+                    bins=t_mids1,
+                    weights=weights1[..., 1:-1],
                     origins=rays["rays_o"],
                     directions=rays["rays_d"],
-                    t_vals=t_vals,
-                    num_samples=self.num_fine_samples,
+                    t_vals=t_vals1,
+                    num_samples=int(self.num_fine_samples/4),
+                    randomized=randomized,
+                )
+                t_mids2 = 0.5 * (t_vals2[..., 1:] + t_vals2[..., :-1])
+                t_vals2, samples2 = helper.sample_pdf(
+                    bins=t_mids2,
+                    weights=weights2[..., 1:-1],
+                    origins=rays_o_pred,
+                    directions=rays_d_pred,
+                    t_vals=t_vals2,
+                    num_samples=int(self.num_fine_samples/4*3),
                     randomized=randomized,
                 )
                 mlp = self.fine_mlp
 
-            samples_enc = helper.pos_enc(
-                samples,
+            samples_enc1 = helper.pos_enc(
+                samples1,
                 self.min_deg_point,
                 self.max_deg_point,
             )
-            viewdirs_enc = helper.pos_enc(rays["viewdirs"], 0, self.deg_view)
-
-            raw_rgb, raw_sigma = mlp(samples_enc, viewdirs_enc)
-
+            samples_enc2 = helper.pos_enc(
+                samples2,
+                self.min_deg_point,
+                self.max_deg_point,
+            )
+            viewdirs_enc1 = helper.pos_enc(rays["viewdirs"], 0, self.deg_view)
+            viewdirs_enc2 = helper.pos_enc(rays_d_pred, 0, self.deg_view)
+            raw_rgb1, raw_sigma1 = mlp(samples_enc1, viewdirs_enc1)
+            raw_rgb2, raw_sigma2 = mlp(samples_enc2, viewdirs_enc2)
             if self.noise_std > 0 and randomized:
-                raw_sigma = raw_sigma + torch.rand_like(raw_sigma) * self.noise_std
+                raw_sigma1 = raw_sigma1 + torch.rand_like(raw_sigma1) * self.noise_std
+                raw_sigma2 = raw_sigma2 + torch.rand_like(raw_sigma2) * self.noise_std
+            rgb = self.rgb_activation(raw_rgb1)
+            rgb = self.rgb_activation(raw_rgb2)
+            sigma1 = self.sigma_activation(raw_sigma1)
+            sigma2 = self.sigma_activation(raw_sigma2)
 
-            rgb = self.rgb_activation(raw_rgb)
-            sigma = self.sigma_activation(raw_sigma)
-
-            comp_rgb, acc, weights = helper.volumetric_rendering(
+            comp_rgb1, acc1, weights1 = helper.volumetric_rendering(
                 rgb,
-                sigma,
-                t_vals,
+                sigma1,
+                t_vals1,
                 rays["rays_d"],
                 white_bkgd=white_bkgd,
             )
+            comp_rgb2, acc2, weights2 = helper.volumetric_rendering(
+                rgb,
+                sigma2,
+                t_vals2,
+                rays_d_pred,
+                white_bkgd=white_bkgd,
+            )
+            comp_rgb = comp_rgb1 * acc1 + comp_rgb2 * acc2
+            acc = acc1 + acc2
 
             ret.append((comp_rgb, acc))
 
@@ -193,7 +266,7 @@ class NeRF(nn.Module):
 
 
 @gin.configurable()
-class LitNeRF(LitModel):
+class LitSNeRF(LitModel):
     def __init__(
         self,
         lr_init: float = 5.0e-4,
@@ -206,8 +279,8 @@ class LitNeRF(LitModel):
             if name not in ["self", "__class__"]:
                 setattr(self, name, value)
 
-        super(LitNeRF, self).__init__()
-        self.model = NeRF()
+        super(LitSNeRF, self).__init__()
+        self.model = SNeRF()
 
     def setup(self, stage: Optional[str] = None) -> None:
         self.near = self.trainer.datamodule.near
@@ -327,3 +400,5 @@ class LitNeRF(LitModel):
             self.write_stats(result_path, psnr, ssim, lpips)
 
         return psnr, ssim, lpips
+
+

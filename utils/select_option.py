@@ -23,7 +23,7 @@ from src.model.nerf.model import LitNeRF
 from src.model.nerfpp.model import LitNeRFPP
 from src.model.plenoxel.model import LitPlenoxel
 from src.model.refnerf.model import LitRefNeRF
-
+from src.model.snerf.model import LitSNeRF
 
 def select_model(
     model_name: str,
@@ -43,6 +43,8 @@ def select_model(
         return LitRefNeRF()
     elif model_name == "mipnerf360":
         return LitMipNeRF360()
+    elif model_name == "snerf":
+        return LitSNeRF()
 
     else:
         raise f"Unknown model named {model_name}"

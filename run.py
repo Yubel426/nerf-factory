@@ -54,8 +54,9 @@ def run(
     max_epochs: int = -1,
     precision: int = 32,
     # Logging
-    log_every_n_steps: int = 1000,
+    log_every_n_steps: int = 10,
     progressbar_refresh_rate: int = 5,
+    val_check_interval: int = 10000,
     # Run Mode
     run_train: bool = True,
     run_eval: bool = True,
@@ -145,11 +146,13 @@ def run(
         replace_sampler_ddp=False,
         strategy=ddp_plugin,
         check_val_every_n_epoch=1,
+        val_check_interval=val_check_interval,
         precision=precision,
         num_sanity_val_steps=num_sanity_val_steps,
         callbacks=callbacks,
         gradient_clip_algorithm=grad_clip_algorithm,
         gradient_clip_val=grad_max_norm,
+        fast_dev_run=debug,
     )
 
     if resume_training:

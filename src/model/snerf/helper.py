@@ -149,3 +149,38 @@ def sample_pdf(bins, weights, origins, directions, t_vals, num_samples, randomiz
     t_vals = torch.sort(torch.cat([t_vals, t_samples], dim=-1), dim=-1).values
     coords = cast_rays(t_vals, origins, directions)
     return t_vals, coords
+
+
+def normalize(x, eps=1e-5):
+    return x / (torch.norm(x, dim=-1, keepdim=True) + eps)
+
+
+def get_rays_uvst(rays_o, rays_d, y1=0, y2=1):
+    # rays_o[batch_size, 3], rays_d[batch_size, 3]
+    x0, y0, z0 = torch.split(rays_o, 1, dim=-1)
+    a, b, c = torch.split(rays_d, 1, dim=-1)
+    # 计算交点
+    t1 = (y1 - y0) / b
+    t2 = (y2 - y0) / b
+    x1 = x0 + a * t1
+    x2 = x0 + a * t2
+    z1 = z0 + c * t1
+    z2 = z0 + c * t2
+    uvst = torch.cat([x1, z1, x2, z2], dim=-1)
+    return uvst
+
+    
+
+def get_rays_d(uvst, y1=0, y2=1):
+    # uvst[batch_size, 4]
+    x1, z1, x2, z2 = torch.split(uvst, 1, dim=-1)
+    # 计算光线方向
+    a = x2 - x1
+    b = y2 - y1
+    b = torch.ones_like(a) * b
+    c = z2 - z1
+    # 方向归一化
+    rays_d = normalize(torch.cat([a, b, c], dim=-1))
+    return rays_d
+
+
