@@ -1,16 +1,20 @@
 ### LLFF Specific Arguments
 
 run.dataset_name = "llff"
-run.datadir = "data/llff"
+run.datadir = "/data2/lxq/datasets/nerf_llff_data"
+run.logbase = "/data2/lxq/logs/nf"
 
 LitData.batch_sampler = "all_images"
-LitData.ndc_coord = True
 
+LitData.ndc_coord = False
+LitDataLLFF.spherify = True
+MipNeRF.lindisp = True
 ## MipNeRF Standard Specific Arguments
 
 run.model_name = "mipnerf"
 run.max_steps = 1000000
 run.log_every_n_steps = 100
+run.val_check_interval = 10000
 
 LitData.load_radii = True
 LitData.batch_size = 4096
