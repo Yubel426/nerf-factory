@@ -28,6 +28,7 @@ from src.model.interface import LitModel
 class ViewMLP(torch.nn.Module):
     def __init__(self):
         super(ViewMLP, self).__init__()
+        self.net_activation = nn.Tanh()
         layers = []
         dim_in = [4, 256, 256, 256, 128, 256, 256, 256, 256]
         dim_out = [256, 256, 252, 128, 256, 256, 128, 256, 4]
@@ -35,7 +36,7 @@ class ViewMLP(torch.nn.Module):
         for i in range(9):
             linear = torch.nn.Linear(dim_in[i], dim_out[i])
             init.xavier_uniform_(linear.weight)
-            layers.append(torch.nn.Sequential(linear, torch.nn.ReLU(True)))
+            layers.append(linear)
         self.layers = torch.nn.ModuleList(layers)
         del layers
 
@@ -43,6 +44,7 @@ class ViewMLP(torch.nn.Module):
         inputs = x
         for i, layer in enumerate(self.layers):
             x = layer(x)
+            x = self.net_activation(x)
             if i == 2:
                 x = torch.cat([x, inputs], dim=-1)
             if i == 3:
@@ -163,7 +165,10 @@ class SNeRF(nn.Module):
         self.sigma_activation = nn.ReLU()
         self.coarse_mlp = SNeRFMLP(min_deg_point, max_deg_point, deg_view)
         self.fine_mlp = SNeRFMLP(min_deg_point, max_deg_point, deg_view)
-        self.viewmlp = ViewMLP()
+        self.coarse_mlp1 = SNeRFMLP(min_deg_point, max_deg_point, deg_view)
+        self.fine_mlp1 = SNeRFMLP(min_deg_point, max_deg_point, deg_view)
+        self.coarse_mlp2 = SNeRFMLP(min_deg_point, max_deg_point, deg_view)
+        self.fine_mlp2 = SNeRFMLP(min_deg_point, max_deg_point, deg_view)
 
     def forward(self, rays, randomized, white_bkgd, near, far):
 
@@ -171,12 +176,13 @@ class SNeRF(nn.Module):
         for i_level in range(self.num_levels):
             if i_level == 0:
                 mid = 0.5
-                # mid_t_val = 1.0 / (1.0 / near * (1.0 - mid) + 1.0 / far * mid)
-                mid_t_val = mid * (near + far)
-                rays_o_pred = rays["rays_o"][..., None, :] + mid_t_val * rays["rays_d"][..., None, :]
+                mid_t_val = 1.0 / (1.0 / near * (1.0 - mid) + 1.0 / far * mid)
+                # mid_t_val = mid * (near + far)
+                rays_o_pred = rays["rays_o"][..., :] + mid_t_val * rays["rays_d"][..., :]
                 uvst = helper.get_rays_uvst(rays["rays_o"], rays["rays_d"],0,1)
-                # uvst_pred = self.view_mlp(uvst)
-                uvst_pred = uvst
+                uvst_pred = self.view_mlp(uvst)
+                uvst_repred = self.view_mlp(torch.neg(uvst_pred))
+                # uvst_pred = uvst
                 rays_d_pred = helper.get_rays_d(uvst_pred)
                 t_vals1, samples1 = helper.sample_along_rays(
                     rays_o=rays["rays_o"],
@@ -196,7 +202,9 @@ class SNeRF(nn.Module):
                     randomized=randomized,
                     lindisp=self.lindisp,
                 )
-                mlp = self.coarse_mlp
+
+                mlp1 = self.coarse_mlp1
+                mlp2 = self.coarse_mlp2
 
             else:
                 t_mids1 = 0.5 * (t_vals1[..., 1:] + t_vals1[..., :-1])
@@ -219,7 +227,9 @@ class SNeRF(nn.Module):
                     num_samples=int(self.num_fine_samples/4*3),
                     randomized=randomized,
                 )
-                mlp = self.fine_mlp
+
+                mlp1 = self.fine_mlp1
+                mlp2 = self.fine_mlp2
 
             samples_enc1 = helper.pos_enc(
                 samples1,
@@ -233,35 +243,35 @@ class SNeRF(nn.Module):
             )
             viewdirs_enc1 = helper.pos_enc(rays["viewdirs"], 0, self.deg_view)
             viewdirs_enc2 = helper.pos_enc(rays_d_pred, 0, self.deg_view)
-            raw_rgb1, raw_sigma1 = mlp(samples_enc1, viewdirs_enc1)
-            raw_rgb2, raw_sigma2 = mlp(samples_enc2, viewdirs_enc2)
+            raw_rgb1, raw_sigma1 = mlp1(samples_enc1, viewdirs_enc1)
+            raw_rgb2, raw_sigma2 = mlp2(samples_enc2, viewdirs_enc2)
             if self.noise_std > 0 and randomized:
                 raw_sigma1 = raw_sigma1 + torch.rand_like(raw_sigma1) * self.noise_std
                 raw_sigma2 = raw_sigma2 + torch.rand_like(raw_sigma2) * self.noise_std
-            rgb = self.rgb_activation(raw_rgb1)
-            rgb = self.rgb_activation(raw_rgb2)
+            rgb1 = self.rgb_activation(raw_rgb1)
+            rgb2 = self.rgb_activation(raw_rgb2)
             sigma1 = self.sigma_activation(raw_sigma1)
             sigma2 = self.sigma_activation(raw_sigma2)
 
             comp_rgb1, acc1, weights1 = helper.volumetric_rendering(
-                rgb,
+                rgb1,
                 sigma1,
                 t_vals1,
                 rays["rays_d"],
                 white_bkgd=white_bkgd,
             )
             comp_rgb2, acc2, weights2 = helper.volumetric_rendering(
-                rgb,
+                rgb2,
                 sigma2,
                 t_vals2,
                 rays_d_pred,
                 white_bkgd=white_bkgd,
             )
-            comp_rgb = comp_rgb1 * acc1 + comp_rgb2 * acc2
+            comp_rgb =  comp_rgb1 + comp_rgb2 
             acc = acc1 + acc2
 
             ret.append((comp_rgb, acc))
-
+        ret.append((uvst_pred, uvst_repred))
         return ret
 
 
@@ -295,16 +305,21 @@ class LitSNeRF(LitModel):
         rgb_coarse = rendered_results[0][0]
         rgb_fine = rendered_results[1][0]
         target = batch["target"]
-
+        uvst_pred = rendered_results[2][0]
+        uvst_repred = rendered_results[2][1]
         loss0 = helper.img2mse(rgb_coarse, target)
         loss1 = helper.img2mse(rgb_fine, target)
-        loss = loss1 + loss0
+        loss2 = torch.norm(torch.add(uvst_pred,uvst_repred), p=2)
+        loss = loss1 + loss0 + 0.05*loss2 
 
         psnr0 = helper.mse2psnr(loss0)
         psnr1 = helper.mse2psnr(loss1)
 
         self.log("train/psnr1", psnr1, on_step=True, prog_bar=True, logger=True)
         self.log("train/psnr0", psnr0, on_step=True, prog_bar=True, logger=True)
+        self.log("train/loss0", loss0, on_step=True, prog_bar=True, logger=True)
+        self.log("train/loss1", loss1, on_step=True, prog_bar=True, logger=True)
+        self.log("train/loss2", loss2, on_step=True, prog_bar=True, logger=True)
         self.log("train/loss", loss, on_step=True)
 
         return loss
