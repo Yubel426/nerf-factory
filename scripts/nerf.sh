@@ -15,8 +15,8 @@ export CUDA_VISIBLE_DEVICES=4
 # python3 -m run --ginc configs/nerf/llff.gin --scene_name leaves
 # python3 -m run --ginc configs/nerf/llff.gin --scene_name room
 # python3 -m run --ginc configs/nerf/llff.gin --scene_name trex
-python3 -m run --ginc configs/nerf/llff.gin --scene_name Glass
-# python3 -m run --ginc configs/nerf/llff_render.gin --scene_name Glass 
+# python3 -m run --ginc configs/nerf/llff.gin --scene_name Glass
+python3 -m run --ginc configs/nerf/llff_render.gin --scene_name Glass 
 # python3 -m run --ginc configs/nerf/tnt.gin --scene_name tat_intermediate_M60
 # python3 -m run --ginc configs/nerf/tnt.gin --scene_name tat_intermediate_Playground
 # python3 -m run --ginc configs/nerf/tnt.gin --scene_name tat_intermediate_Train

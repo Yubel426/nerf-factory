@@ -1,4 +1,4 @@
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=6
 # python3 -m run --ginc configs/mipnerf/blender.gin --scene_name chair
 # python3 -m run --ginc configs/mipnerf/blender.gin --scene_name drums
 # python3 -m run --ginc configs/mipnerf/blender.gin --scene_name ficus

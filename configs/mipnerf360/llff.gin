@@ -1,7 +1,13 @@
 ### LLFF Specific Arguments
 
 run.dataset_name = "llff"
-run.datadir = "data/llff"
+run.datadir = "/data2/lxq/datasets/nerf_llff_data"
+run.logbase = "/data2/lxq/logs/nf"
+
+# rendering
+run.run_train = False
+run.run_eval = False
+run.run_render = True
 
 LitData.batch_sampler = "all_images"
 

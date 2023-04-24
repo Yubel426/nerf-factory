@@ -1,9 +1,11 @@
 ### RefNeRF Real Specific Arguments
 
 run.dataset_name = "refnerf_real"
-run.datadir = "data/ref_real"
+run.datadir = "/data2/lxq/datasets/nerf_llff_data"
+run.logbase = "/data2/lxq/logs/nf"
 
 LitData.batch_sampler = "all_images"
+
 
 ### RefNeRF Standard Specific Arguments
 
