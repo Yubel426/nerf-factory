@@ -155,6 +155,14 @@ def normalize(x, eps=1e-5):
     return x / (torch.norm(x, dim=-1, keepdim=True) + eps)
 
 
+def l2_normalize(x, eps=torch.finfo(torch.float32).eps):
+    """Normalize x to unit length along last axis."""
+
+    return x / torch.sqrt(
+        torch.fmax(torch.sum(x**2, dim=-1, keepdims=True), torch.full_like(x, eps))
+    )
+
+
 def get_rays_uvst(rays_o, rays_d, y1=0, y2=1):
     # rays_o[batch_size, 3], rays_d[batch_size, 3]
     x0, y0, z0 = torch.split(rays_o, 1, dim=-1)
@@ -184,3 +192,9 @@ def get_rays_d(uvst, y1=0, y2=1):
     return rays_d
 
 
+def normal_loss(normal):
+    normal = torch.sum(normal, dim=0)
+    normal = torch.abs(normal)
+    min = torch.min(normal)
+    loss = torch.sum(normal) - min
+    return loss
