@@ -51,7 +51,8 @@ class ViewMLP(torch.nn.Module):
                 inputs = x
             if i == 6:
                 x = torch.cat([x, inputs], dim=-1)
-        x = helper.normalize(x)
+        # TODO: add the noise
+        x = helper.l2_normalize(x)
         return x
 
 
@@ -71,6 +72,7 @@ class SNeRFMLP(nn.Module):
         input_ch_view: int = 3,
         num_rgb_channels: int = 3,
         num_density_channels: int = 1,
+        disable_rgb: bool = False,
     ):
         for name, value in vars().items():
             if name not in ["self", "__class__"]:
@@ -96,34 +98,36 @@ class SNeRFMLP(nn.Module):
 
         self.pts_linears = nn.ModuleList(pts_linear)
 
-        views_linear = [nn.Linear(netwidth + view_pos_size, netwidth_condition)]
-        for idx in range(netdepth_condition - 1):
-            layer = nn.Linear(netwidth_condition, netwidth_condition)
-            init.xavier_uniform_(layer.weight)
-            views_linear.append(layer)
-
-        self.views_linear = nn.ModuleList(views_linear)
-
-        self.bottleneck_layer = nn.Linear(netwidth, netwidth)
         self.density_layer = nn.Linear(netwidth, num_density_channels)
-        self.rgb_layer = nn.Linear(netwidth_condition, num_rgb_channels)
-
-        init.xavier_uniform_(self.bottleneck_layer.weight)
         init.xavier_uniform_(self.density_layer.weight)
-        init.xavier_uniform_(self.rgb_layer.weight)
+
+        if not disable_rgb:
+            views_linear = [nn.Linear(netwidth + view_pos_size, netwidth_condition)]
+            for idx in range(netdepth_condition - 1):
+                layer = nn.Linear(netwidth_condition, netwidth_condition)
+                init.xavier_uniform_(layer.weight)
+                views_linear.append(layer)
+
+            self.views_linear = nn.ModuleList(views_linear)
+
+            self.bottleneck_layer = nn.Linear(netwidth, netwidth)
+            self.rgb_layer = nn.Linear(netwidth_condition, num_rgb_channels)
+
+            init.xavier_uniform_(self.bottleneck_layer.weight)
+            init.xavier_uniform_(self.rgb_layer.weight)
 
     def forward(self, x, condition, comput_normal=False):
         # 1st part
         normals = torch.zeros_like(x)
+        x_raw = x
         if comput_normal:
             with torch.set_grad_enabled(True):
                 x.requires_grad = True
                 x_to_compute_normal = x
-                # TODO: use parm to encode
                 x = helper.pos_enc(
                 x,
-                0,
-                10,
+                self.min_deg_point,
+                self.max_deg_point,
                 )
                 num_samples, feat_dim = x.shape[1:]
                 x = x.reshape(-1, feat_dim)
@@ -151,8 +155,8 @@ class SNeRFMLP(nn.Module):
         else:
             x = helper.pos_enc(
                 x,
-                0,
-                10,
+                self.min_deg_point,
+                self.max_deg_point,
             )
             num_samples, feat_dim = x.shape[1:]
             x = x.reshape(-1, feat_dim)
@@ -167,6 +171,10 @@ class SNeRFMLP(nn.Module):
                 -1, num_samples, self.num_density_channels
             )
 
+        if self.disable_rgb:
+            rgb = torch.zeros_like(x_raw)
+            return raw_rgb, raw_density, normals
+        
         # 2nd part
         bottleneck = self.bottleneck_layer(x)
         condition_tile = torch.tile(condition[:, None, :], (1, num_samples, 1)).reshape(
@@ -216,38 +224,73 @@ class SNeRF(nn.Module):
         ret = []
         for i_level in range(self.num_levels):
             if i_level == 0:
-                mid = 0.5
-                mid_t_val = 1.0 / (1.0 / near * (1.0 - mid) + 1.0 / far * mid)
-                # mid_t_val = mid * (near + far)
-                rays_o_pred = rays["rays_o"][..., :] + mid_t_val * rays["rays_d"][..., :]
-                uvst = helper.get_rays_uvst(rays["rays_o"], rays["rays_d"],0,1)
-                uvst_pred = self.view_mlp(uvst)
-                uvst_repred = self.view_mlp(torch.neg(uvst_pred))
-                # uvst_pred = uvst
-                rays_d_pred = helper.get_rays_d(uvst_pred)
+                mlp1 = self.coarse_mlp1
+                mlp2 = self.coarse_mlp2
+                # 1st part
                 t_vals1, samples1 = helper.sample_along_rays(
                     rays_o=rays["rays_o"],
                     rays_d=rays["rays_d"],
                     num_samples=int(self.num_coarse_samples/4),
                     near=near,
-                    far=far/1.5,
+                    far=far,
                     randomized=randomized,
                     lindisp=self.lindisp,
                 )
+                viewdirs_enc1 = helper.pos_enc(rays["viewdirs"], 0, self.deg_view)
+                raw_rgb1, raw_sigma1, normals = mlp1( samples1, viewdirs_enc1, True)
+                if self.noise_std > 0 and randomized:
+                    raw_sigma1 = raw_sigma1 + torch.rand_like(raw_sigma1) * self.noise_std
+                rgb1 = self.rgb_activation(raw_rgb1)
+                sigma1 = self.sigma_activation(raw_sigma1)
+                comp_rgb1, acc1, weights1, depth = helper.volumetric_rendering(
+                    rgb1,
+                    sigma1,
+                    t_vals1,
+                    rays["rays_d"],
+                    white_bkgd=white_bkgd,
+                )
+                normal = (weights1[..., None] * normals).sum(dim=-2)
+
+                # 2nd part
+                pts1 = rays["rays_o"] + torch.mul(depth.unsqueeze(1), rays["rays_d"])
+                pts_z = pts1[..., 2:]
+                uvst = helper.get_rays_uvst(rays["rays_o"], rays["rays_d"],0,1)
+                # TODO: input the normal
+                uvst_pred = self.view_mlp(uvst)
+                rays_o_pred = helper.get_interest_point(uvst_pred, pts_z)
+                rays_d_pred = helper.get_rays_d(uvst_pred)
+
+                uvst_repred = self.view_mlp(torch.neg(uvst_pred))
+
                 t_vals2, samples2 = helper.sample_along_rays(
                     rays_o=rays_o_pred,
                     rays_d=rays_d_pred,
-                    num_samples=int(self.num_coarse_samples/4*3),
+                    num_samples=int(self.num_coarse_samples),
                     near=near,
-                    far=far/1.5,
+                    far=far,
                     randomized=randomized,
                     lindisp=self.lindisp,
                 )
+                viewdirs_enc2 = helper.pos_enc(rays_d_pred, 0, self.deg_view)
+                raw_rgb2, raw_sigma2, _ = mlp2( samples2, viewdirs_enc2)
+                if self.noise_std > 0 and randomized:
+                    raw_sigma2 = raw_sigma2 + torch.rand_like(raw_sigma2) * self.noise_std
+                rgb2 = self.rgb_activation(raw_rgb2)
+                sigma2 = self.sigma_activation(raw_sigma2)
 
-                mlp1 = self.coarse_mlp1
-                mlp2 = self.coarse_mlp2
+                comp_rgb2, acc2, weights2, _ = helper.volumetric_rendering(
+                    rgb2,
+                    sigma2,
+                    t_vals2,
+                    rays_d_pred,
+                    white_bkgd=white_bkgd,
+                )
+
 
             else:
+                mlp1 = self.fine_mlp1
+                mlp2 = self.fine_mlp2
+                # 1st part
                 t_mids1 = 0.5 * (t_vals1[..., 1:] + t_vals1[..., :-1])
                 t_vals1, samples1 = helper.sample_pdf(
                     bins=t_mids1,
@@ -255,9 +298,27 @@ class SNeRF(nn.Module):
                     origins=rays["rays_o"],
                     directions=rays["rays_d"],
                     t_vals=t_vals1,
-                    num_samples=int(self.num_fine_samples/4),
+                    num_samples=int(self.num_fine_samples),
                     randomized=randomized,
                 )
+
+                viewdirs_enc1 = helper.pos_enc(rays["viewdirs"], 0, self.deg_view)
+                raw_rgb1, raw_sigma1, normals = mlp1( samples1, viewdirs_enc1, True)
+                if self.noise_std > 0 and randomized:
+                    raw_sigma1 = raw_sigma1 + torch.rand_like(raw_sigma1) * self.noise_std
+                rgb1 = self.rgb_activation(raw_rgb1)
+                sigma1 = self.sigma_activation(raw_sigma1)
+
+                comp_rgb1, acc1, weights1, _ = helper.volumetric_rendering(
+                    rgb1,
+                    sigma1,
+                    t_vals1,
+                    rays["rays_d"],
+                    white_bkgd=white_bkgd,
+                )
+                normal = (weights1[..., None] * normals).sum(dim=-2)
+
+                # 2nd part
                 t_mids2 = 0.5 * (t_vals2[..., 1:] + t_vals2[..., :-1])
                 t_vals2, samples2 = helper.sample_pdf(
                     bins=t_mids2,
@@ -265,58 +326,30 @@ class SNeRF(nn.Module):
                     origins=rays_o_pred,
                     directions=rays_d_pred,
                     t_vals=t_vals2,
-                    num_samples=int(self.num_fine_samples/4*3),
+                    num_samples=int(self.num_fine_samples),
                     randomized=randomized,
                 )
+                viewdirs_enc2 = helper.pos_enc(rays_d_pred, 0, self.deg_view)
+                raw_rgb2, raw_sigma2, _ = mlp2( samples2, viewdirs_enc2)
+                if self.noise_std > 0 and randomized:
+                    raw_sigma2 = raw_sigma2 + torch.rand_like(raw_sigma2) * self.noise_std
+                rgb2 = self.rgb_activation(raw_rgb2)
+                sigma2 = self.sigma_activation(raw_sigma2)
 
-                mlp1 = self.fine_mlp1
-                mlp2 = self.fine_mlp2
-
-            samples_enc1 = helper.pos_enc(
-                samples1,
-                self.min_deg_point,
-                self.max_deg_point,
-            )
-            samples_enc2 = helper.pos_enc(
-                samples2,
-                self.min_deg_point,
-                self.max_deg_point,
-            )
-            viewdirs_enc1 = helper.pos_enc(rays["viewdirs"], 0, self.deg_view)
-            viewdirs_enc2 = helper.pos_enc(rays_d_pred, 0, self.deg_view)
-            raw_rgb1, raw_sigma1, normals = mlp1( samples1, viewdirs_enc1, True)
-            raw_rgb2, raw_sigma2, _ = mlp2( samples2, viewdirs_enc2)
-            if self.noise_std > 0 and randomized:
-                raw_sigma1 = raw_sigma1 + torch.rand_like(raw_sigma1) * self.noise_std
-                raw_sigma2 = raw_sigma2 + torch.rand_like(raw_sigma2) * self.noise_std
-            rgb1 = self.rgb_activation(raw_rgb1)
-            rgb2 = self.rgb_activation(raw_rgb2)
-            sigma1 = self.sigma_activation(raw_sigma1)
-            sigma2 = self.sigma_activation(raw_sigma2)
-
-            comp_rgb1, acc1, weights1 = helper.volumetric_rendering(
-                rgb1,
-                sigma1,
-                t_vals1,
-                rays["rays_d"],
-                white_bkgd=white_bkgd,
-            )
-            comp_rgb2, acc2, weights2 = helper.volumetric_rendering(
-                rgb2,
-                sigma2,
-                t_vals2,
-                rays_d_pred,
-                white_bkgd=white_bkgd,
-            )
+                comp_rgb2, acc2, weights2, _ = helper.volumetric_rendering(
+                    rgb2,
+                    sigma2,
+                    t_vals2,
+                    rays_d_pred,
+                    white_bkgd=white_bkgd,
+                )
+            
             comp_rgb =  comp_rgb1 + comp_rgb2 
             acc = acc1 + acc2
 
-            normal = (weights1[..., None] * normals).sum(dim=-2)
-
-
             ret.append((comp_rgb, acc, normal))
         ret.append((uvst_pred, uvst_repred))
-        # Todo: change to dic
+        # TODO: change to dic
         return ret
 
 

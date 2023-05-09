@@ -94,7 +94,7 @@ def volumetric_rendering(rgb, density, t_vals, dirs, white_bkgd):
     if white_bkgd:
         comp_rgb = comp_rgb + (1.0 - acc[..., None])
 
-    return comp_rgb, acc, weights
+    return comp_rgb, acc, weights, depth
 
 
 def sorted_piecewise_constant_pdf(
@@ -163,30 +163,41 @@ def l2_normalize(x, eps=torch.finfo(torch.float32).eps):
     )
 
 
-def get_rays_uvst(rays_o, rays_d, y1=0, y2=1):
+def get_rays_uvst(rays_o, rays_d, z1=0, z2=1):
     # rays_o[batch_size, 3], rays_d[batch_size, 3]
     x0, y0, z0 = torch.split(rays_o, 1, dim=-1)
     a, b, c = torch.split(rays_d, 1, dim=-1)
     # 计算交点
-    t1 = (y1 - y0) / b
-    t2 = (y2 - y0) / b
+    t1 = (z1 - z0) / c
+    t2 = (z2 - z0) / c
     x1 = x0 + a * t1
     x2 = x0 + a * t2
-    z1 = z0 + c * t1
-    z2 = z0 + c * t2
-    uvst = torch.cat([x1, z1, x2, z2], dim=-1)
+    y1 = y0 + b * t1
+    y2 = y0 + b * t2
+    uvst = torch.cat([x1, y1, x2, y2], dim=-1)
     return uvst
 
     
-
-def get_rays_d(uvst, y1=0, y2=1):
+def get_interest_point(uvst, z_val):
     # uvst[batch_size, 4]
-    x1, z1, x2, z2 = torch.split(uvst, 1, dim=-1)
+    # z_val[batch_size, 1]
+    x1, y1, x2, y2 = torch.split(uvst, 1, dim=-1)
+    # 计算交点
+    # z1 = 0, z2 = 1
+    x0 = (x2 - x1) * z_val + x1
+    y0 = (y2 - y1) * z_val + y1
+    interest_point = torch.cat([x0, y0, z_val], dim=-1)
+    return interest_point
+
+
+def get_rays_d(uvst, z1=0, z2=1):
+    # uvst[batch_size, 4]
+    x1, y1, x2, y2 = torch.split(uvst, 1, dim=-1)
     # 计算光线方向
     a = x2 - x1
     b = y2 - y1
-    b = torch.ones_like(a) * b
     c = z2 - z1
+    c = torch.ones_like(a) * c
     # 方向归一化
     rays_d = normalize(torch.cat([a, b, c], dim=-1))
     return rays_d
