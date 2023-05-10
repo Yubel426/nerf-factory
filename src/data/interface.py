@@ -28,7 +28,7 @@ class LitData(pl.LightningDataModule):
         datadir: str,
         batch_size: int = 4096,
         chunk: int = 1024 * 32,
-        num_workers: int = 16,
+        num_workers: int = 12,
         ndc_coord: bool = False,
         batch_sampler: str = "all_images_wo_replace",
         eval_test_only: bool = True,

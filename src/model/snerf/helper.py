@@ -206,6 +206,6 @@ def get_rays_d(uvst, z1=0, z2=1):
 def normal_loss(normal):
     normal = torch.sum(normal, dim=0)
     normal = torch.abs(normal)
-    min = torch.min(normal)
-    loss = torch.sum(normal) - min
+    max = torch.max(normal)
+    loss = torch.sum(normal) - max
     return loss
