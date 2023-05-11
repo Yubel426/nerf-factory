@@ -438,7 +438,7 @@ class LitSNeRF(LitModel):
         rendered_results = self.model(
             batch, False, self.white_bkgd, self.near, self.far
         )
-        rgb_fine = rendered_results[1][0]
+        rgb_fine = rendered_results[1][0]["comp_rgb"]
         target = batch["target"]
         ret["target"] = target
         ret["rgb"] = rgb_fine
