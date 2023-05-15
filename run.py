@@ -220,7 +220,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--scene_name", type=str, default=None, help="scene name to render"
     )
-    parser.add_argument("--seed", type=int, default=220901, help="seed to use")
+    parser.add_argument("--seed", type=int, default=3407, help="seed to use")
     args = parser.parse_args()
 
     ginbs = []
