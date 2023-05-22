@@ -209,3 +209,16 @@ def normal_loss(normal):
     max = torch.max(normal)
     loss = torch.sum(normal) - max
     return loss
+
+
+def refractive(viewdirs, normals, index):
+    n_dot_w = torch.sum(
+        normals * viewdirs, axis=-1, keepdims=True)
+    viewout = (- index * n_dot_w - torch.sqrt(1 - index ** 2 * (1 - n_dot_w ** 2))) * normals + index * viewdirs
+    return l2_normalize(viewout)
+
+if __name__ == "__main__":
+    v_in = torch.tensor([0, torch.sqrt(torch.tensor(3))/2, 1/2])
+    normal = torch.tensor([0,-1,0])
+    v_out = refractive(-v_in, -normal,1)
+    print(v_out)
