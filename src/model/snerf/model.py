@@ -424,7 +424,7 @@ class LitSNeRF(LitModel):
         loss2 = 0.1 * torch.mean((1.0 - torch.sum(view * torch.neg(view_pred), dim=-1)).sum(dim=-1))
 
         viewmlp_loss = self.viewmlp_reg_loss(rendered_results)
-
+        viewmlp_reg = self.viewmlp_reg(rendered_results)
         # loss_normal_reg_coarse = helper.normal_loss(res_coarse[0]["normal"])
         # loss_normal_reg_fine = helper.normal_loss(res_fine[0]["normal"])
         # loss_normal_reg = 3e-5 * loss_normal_reg_coarse + 3e-4 * loss_normal_reg_fine
@@ -433,7 +433,7 @@ class LitSNeRF(LitModel):
         loss_normal_fine = sum(self.pred_normal_loss(res_fine[i]["normals"], res_fine[i]["normals_pred"], res_fine[i]["weights"]) for i in range(1,3))
         loss_normal = 3e-5 * loss_normal_coarse + 3e-4 * loss_normal_fine
        
-        loss = loss1 + loss0 + 0.05*loss2 + loss_normal + viewmlp_loss
+        loss = loss1 + loss0 + 0.05*loss2 + loss_normal + viewmlp_reg
         psnr0 = helper.mse2psnr(loss0)
         psnr1 = helper.mse2psnr(loss1)
 
@@ -560,5 +560,20 @@ class LitSNeRF(LitModel):
         normal2 = res_coarse[0]["normal2"]
         view_mid = helper.refractive(view, normal1, 4/3)
         view_mid_pred = helper.refractive(torch.neg(view_pred), normal2, 3/4)
-        loss =  torch.mean((1.0 - torch.sum(view_mid * torch.neg(view_mid_pred), dim=-1)).sum(dim=-1))
+        loss = torch.mean((1.0 - torch.sum(view_mid * torch.neg(view_mid_pred), dim=-1)).sum(dim=-1))
+        return 0.01*loss
+    
+    def viewmlp_reg(self,rendered_results):
+        res_coarse = rendered_results[0]
+        res_uvst = rendered_results[2]
+
+        view = helper.get_rays_d(res_uvst[0])
+        view_pred = helper.get_rays_d(res_uvst[1])
+        normal1 = res_coarse[0]["normal1"]
+        normal2 = res_coarse[0]["normal2"]
+
+        plane1 = helper.l2_normalize(torch.cross(view, normal1))
+        plane2 = helper.l2_normalize(torch.cross(view_pred, normal2))
+
+        loss = torch.mean((1.0 - torch.sum(plane1 * plane2, dim=-1)).sum(dim=-1))
         return 0.01*loss
