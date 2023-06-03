@@ -31,7 +31,7 @@ class ViewMLP(torch.nn.Module):
         self.net_activation = nn.Tanh()
         layers = []
         dim_in = [7, 256, 256, 256, 128, 256, 256, 256, 256]
-        dim_out = [256, 256, 249, 128, 256, 256, 128, 256, 4]
+        dim_out = [256, 256, 249, 128, 256, 256, 128, 256, 7]
         self.skip = [2, 6]
         for i in range(9):
             linear = torch.nn.Linear(dim_in[i], dim_out[i])
@@ -239,8 +239,6 @@ class SNeRF(nn.Module):
 
         self.coarse_mlp1 = SNeRFMLP(min_deg_point, max_deg_point, deg_view)
         self.fine_mlp1 = SNeRFMLP(min_deg_point, max_deg_point, deg_view)
-        self.coarse_mlp2 = SNeRFMLP(min_deg_point, max_deg_point, deg_view)
-        self.fine_mlp2 = SNeRFMLP(min_deg_point, max_deg_point, deg_view)
 
         self.view_mlp = ViewMLP()
     def forward(self, rays, randomized, white_bkgd, near, far):
@@ -271,21 +269,23 @@ class SNeRF(nn.Module):
                 )
                 res1["weights"] = weights1
                 if self.training:
-                    normal1 = (weights1[..., None] * res1["normals"]).sum(dim=-2)
+                    normal = (weights1[..., None] * res1["normals"]).sum(dim=-2)
                 else:
-                    normal1 = (weights1[..., None] * res1["normals_pred"]).sum(dim=-2)
+                    normal = (weights1[..., None] * res1["normals_pred"]).sum(dim=-2)
 
                 # 2nd part
                 pts1 = rays["rays_o"] + torch.mul(depth.unsqueeze(1), rays["rays_d"])
                 pts_z = pts1[..., 2:]
                 uvst = helper.get_rays_uvst(rays["rays_o"], rays["rays_d"],0,1)
 
-                uvst_normal = torch.cat([normal1, uvst], dim=-1)
-                uvst_pred = self.view_mlp(uvst_normal)
+                uvst_normal = torch.cat([normal, uvst], dim=-1)
+                uvst_normal_pred = self.view_mlp(uvst_normal)
+                uvst_pred = uvst_normal_pred[..., 3:]
                 rays_o_pred = helper.get_interest_point(uvst_pred, pts_z)
                 rays_d_pred = helper.get_rays_d(uvst_pred)
 
-
+                uvst_normal_repred = self.view_mlp(torch.neg(uvst_normal_pred))
+                uvst_repred = uvst_normal_repred[..., 3:]
 
                 t_vals2, samples2 = helper.sample_along_rays(
                     rays_o=rays_o_pred,
@@ -307,14 +307,6 @@ class SNeRF(nn.Module):
                     white_bkgd=white_bkgd,
                 )
                 res2["weights"] = weights2
-
-                if self.training:
-                    normal2 = (weights2[..., None] * res2["normals"]).sum(dim=-2)
-                else:
-                    normal2 = (weights2[..., None] * res2["normals_pred"]).sum(dim=-2)
-                
-                uvst_normal_pred = torch.cat([normal2, torch.neg(uvst_pred)], dim=-1)
-                uvst_repred = self.view_mlp(uvst_normal_pred)
 
             else:
                 mlp1 = self.fine_mlp1
@@ -376,8 +368,7 @@ class SNeRF(nn.Module):
             res = {}
             res["comp_rgb"] = comp_rgb
             res["acc"] = acc
-            res["normal1"] = normal1
-            res["normal2"] = normal2
+            res["normal"] = normal
             ret.append([res,res1,res2])
         ret.append((uvst_pred, uvst_repred))
         # TODO: change to dic
@@ -419,21 +410,19 @@ class LitSNeRF(LitModel):
         loss0 = helper.img2mse(res_coarse[0]["comp_rgb"], target)
         loss1 = helper.img2mse(res_fine[0]["comp_rgb"], target)
 
+        # loss2 = torch.norm(torch.add(res_uvst[0],res_uvst[1]), p=2)
         view = helper.get_rays_d(res_uvst[0])
         view_pred = helper.get_rays_d(res_uvst[1])
-        loss2 = 0.1 * torch.mean((1.0 - torch.sum(view * torch.neg(view_pred), dim=-1)).sum(dim=-1))
+        loss2 = 0.1 * torch.mean((1.0 - torch.sum(view * view_pred, dim=-1)).sum(dim=-1))
 
-        viewmlp_loss = self.viewmlp_reg_loss(rendered_results)
-        viewmlp_reg = self.viewmlp_reg(rendered_results)
-        # loss_normal_reg_coarse = helper.normal_loss(res_coarse[0]["normal"])
-        # loss_normal_reg_fine = helper.normal_loss(res_fine[0]["normal"])
-        # loss_normal_reg = 3e-5 * loss_normal_reg_coarse + 3e-4 * loss_normal_reg_fine
-
+        loss_normal_reg_coarse = helper.normal_loss(res_coarse[0]["normal"])
+        loss_normal_reg_fine = helper.normal_loss(res_fine[0]["normal"])
         loss_normal_coarse = sum(self.pred_normal_loss(res_coarse[i]["normals"], res_coarse[i]["normals_pred"], res_coarse[i]["weights"]) for i in range(1,3))
         loss_normal_fine = sum(self.pred_normal_loss(res_fine[i]["normals"], res_fine[i]["normals_pred"], res_fine[i]["weights"]) for i in range(1,3))
         loss_normal = 3e-5 * loss_normal_coarse + 3e-4 * loss_normal_fine
+        loss_normal_reg = 3e-5 * loss_normal_reg_coarse + 3e-4 * loss_normal_reg_fine
        
-        loss = loss1 + loss0 + 0.05*loss2 + loss_normal + viewmlp_reg
+        loss = loss1 + loss0 + 0.05*loss2 + loss_normal 
         psnr0 = helper.mse2psnr(loss0)
         psnr1 = helper.mse2psnr(loss1)
 
@@ -548,32 +537,3 @@ class LitSNeRF(LitModel):
         loss = torch.mean((w * (1.0 - torch.sum(n * n_pred, dim=-1))).sum(dim=-1))
 
         return loss
-    
-    def viewmlp_reg_loss(self,rendered_results):
-        res_coarse = rendered_results[0]
-        res_fine = rendered_results[1]
-        res_uvst = rendered_results[2]
-
-        view = helper.get_rays_d(res_uvst[0])
-        view_pred = helper.get_rays_d(res_uvst[1])
-        normal1 = res_coarse[0]["normal1"]
-        normal2 = res_coarse[0]["normal2"]
-        view_mid = helper.refractive(view, normal1, 4/3)
-        view_mid_pred = helper.refractive(torch.neg(view_pred), normal2, 3/4)
-        loss = torch.mean((1.0 - torch.sum(view_mid * torch.neg(view_mid_pred), dim=-1)).sum(dim=-1))
-        return 0.01*loss
-    
-    def viewmlp_reg(self,rendered_results):
-        res_coarse = rendered_results[0]
-        res_uvst = rendered_results[2]
-
-        view = helper.get_rays_d(res_uvst[0])
-        view_pred = helper.get_rays_d(res_uvst[1])
-        normal1 = res_coarse[0]["normal1"]
-        normal2 = res_coarse[0]["normal2"]
-
-        plane1 = helper.l2_normalize(torch.cross(view, normal1))
-        plane2 = helper.l2_normalize(torch.cross(view_pred, normal2))
-
-        loss = torch.mean((1.0 - torch.sum(plane1 * plane2, dim=-1)).sum(dim=-1))
-        return 0.01*loss
