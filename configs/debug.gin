@@ -1,0 +1,33 @@
+### LLFF Specific Arguments
+
+run.dataset_name = "llff"
+run.datadir = "/data2/lxq/datasets/nerf_llff_data"
+run.logbase = "/data2/lxq/logs/nf"
+
+LitData.batch_sampler = "all_images"
+# LitData.ndc_coord = True
+
+### NeRF Standard Specific Arguments
+
+SNeRF.num_coarse_samples = 16
+SNeRF.num_fine_samples = 32
+SNeRF.noise_std = 1.
+SNeRFMLP.netwidth = 64
+SNeRFMLP.netdepth = 4
+SNeRFMLP.skip_layer = 2
+
+LitData.ndc_coord = False
+LitDataLLFF.spherify = True
+SNeRF.lindisp = True
+
+LitData.batch_size = 128
+LitData.chunk = 128
+LitData.use_pixel_centers = True
+LitData.epoch_size = 2500
+LitDataLLFF.llffhold = 2
+
+run.max_steps = 1000
+run.log_every_n_steps = 100
+run.model_name = "snerf"
+run.val_check_interval = 100
+run.debug = False

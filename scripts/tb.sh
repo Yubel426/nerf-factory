@@ -1,0 +1,1 @@
+tensorboard --logdir=/data2/lxq/logs/nf --port=6111

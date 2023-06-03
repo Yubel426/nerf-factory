@@ -17,6 +17,5 @@ data/*
 dataloader/co3d_lists/*
 !dataloader/co3d_lists/.gitkeep
 
-scripts/*
-configs/*
+
 
